@@ -26,7 +26,16 @@ jobs:
             mv ic_close.xml ic_launcher.xml ic_map.xml app/src/main/res/drawable/
             mv strings.xml app/src/main/res/values/
           fi
-          find . -path ./.git -prune -o -type f -print | sort
+
+      - name: Use fixed signing key
+        run: |
+          mkdir -p ~/.android
+          if [ -f debug.keystore ] && keytool -list -keystore debug.keystore -storepass android -alias androiddebugkey > /dev/null 2>&1; then
+            cp debug.keystore ~/.android/debug.keystore
+            echo "Using fixed signing key"
+          else
+            echo "No valid debug.keystore found, using a random key"
+          fi
 
       - uses: actions/setup-java@v4
         with:
