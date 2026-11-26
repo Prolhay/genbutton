@@ -17,6 +17,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.Message
 import android.view.ContextThemeWrapper
 import android.view.Gravity
 import android.view.KeyEvent
@@ -25,6 +26,7 @@ import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.CookieManager
+import android.webkit.WebResourceRequest
 import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -53,6 +55,7 @@ class OverlayService : Service() {
 
     private var webView: WebView? = null
     private var mapLayout: MapLayout? = null
+    private var popupView: WebView? = null
 
     private val overlayType = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
 
@@ -235,6 +238,7 @@ class OverlayService : Service() {
 
     private fun hideMap() {
         val layout = mapLayout ?: return
+        closePopup()
         webView?.let {
             it.onPause()
             layout.removeView(it) // WebView остаётся в памяти — карта откроется там же, где закрыли
@@ -249,16 +253,72 @@ class OverlayService : Service() {
         val themed = ContextThemeWrapper(applicationContext, android.R.style.Theme_DeviceDefault)
         return WebView(themed).apply {
             setBackgroundColor(Color.BLACK)
-            settings.javaScriptEnabled = true
-            settings.domStorageEnabled = true
-            settings.useWideViewPort = true
-            settings.loadWithOverviewMode = true
-            CookieManager.getInstance().setAcceptCookie(true)
-            CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
-            webViewClient = WebViewClient()
-            webChromeClient = WebChromeClient()
+            configure(this)
+            webChromeClient = object : WebChromeClient() {
+                // Окно входа HoYoLAB открывается как всплывающее окно — показываем его поверх карты.
+                override fun onCreateWindow(
+                    view: WebView?, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message?
+                ): Boolean {
+                    if (view == null || resultMsg == null) return false
+                    closePopup()
+                    val popup = WebView(view.context)
+                    configure(popup)
+                    popup.setBackgroundColor(Color.WHITE)
+                    popup.webChromeClient = object : WebChromeClient() {
+                        override fun onCloseWindow(window: WebView?) {
+                            handler.post { closePopup() }
+                        }
+                    }
+                    mapLayout?.addView(
+                        popup,
+                        FrameLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT
+                        )
+                    )
+                    popupView = popup
+                    val transport = resultMsg.obj as WebView.WebViewTransport
+                    transport.webView = popup
+                    resultMsg.sendToTarget()
+                    return true
+                }
+
+                override fun onCloseWindow(window: WebView?) {
+                    handler.post { closePopup() }
+                }
+            }
             loadUrl(MAP_URL)
         }
+    }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun configure(w: WebView) {
+        w.settings.apply {
+            javaScriptEnabled = true
+            domStorageEnabled = true
+            useWideViewPort = true
+            loadWithOverviewMode = true
+            setSupportMultipleWindows(true)
+            javaScriptCanOpenWindowsAutomatically = true
+            // Убираем пометку "wv", чтобы сайт считал браузер обычным Chrome
+            userAgentString = userAgentString.replace("; wv", "").replace("Version/4.0 ", "")
+        }
+        CookieManager.getInstance().setAcceptCookie(true)
+        CookieManager.getInstance().setAcceptThirdPartyCookies(w, true)
+        w.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                val scheme = request.url.scheme
+                return scheme != "http" && scheme != "https"
+            }
+        }
+    }
+
+    private fun closePopup() {
+        popupView?.let {
+            mapLayout?.removeView(it)
+            it.destroy()
+        }
+        popupView = null
     }
 
     /** Окно с картой; кнопка «Назад» сначала ходит по истории страницы, потом закрывает карту. */
@@ -266,8 +326,13 @@ class OverlayService : Service() {
         override fun dispatchKeyEvent(event: KeyEvent): Boolean {
             if (event.keyCode == KeyEvent.KEYCODE_BACK) {
                 if (event.action == KeyEvent.ACTION_UP) {
+                    val p = popupView
                     val w = webView
-                    if (w != null && w.canGoBack()) w.goBack() else hideMap()
+                    when {
+                        p != null -> if (p.canGoBack()) p.goBack() else closePopup()
+                        w != null && w.canGoBack() -> w.goBack()
+                        else -> hideMap()
+                    }
                 }
                 return true
             }
