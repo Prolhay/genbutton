@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Карта поверх игры</string>
+    <string name="app_name">Genshin Map</string>
+    <string name="accessibility_label">Genshin Map — пропуск диалогов</string>
+    <string name="accessibility_desc">Нажимает на экран по команде кнопки «пропуск диалогов». Содержимое экрана не читает.</string>
 </resources>
