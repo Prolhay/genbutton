@@ -15,16 +15,17 @@ jobs:
         run: |
           if [ ! -d app ]; then
             mkdir -p app/src/main/java/com/example/mapoverlay
-            mkdir -p app/src/main/res/drawable app/src/main/res/values
+            mkdir -p app/src/main/res/drawable app/src/main/res/values app/src/main/res/xml
             for f in build.gradle*.kts; do
               if grep -q namespace "$f"; then cp "$f" /tmp/app.kts; else cp "$f" /tmp/root.kts; fi
             done
             cp /tmp/root.kts build.gradle.kts
             cp /tmp/app.kts app/build.gradle.kts
             mv AndroidManifest.xml app/src/main/
-            mv MainActivity.kt OverlayService.kt app/src/main/java/com/example/mapoverlay/
-            mv ic_close.xml ic_launcher.xml ic_map.xml app/src/main/res/drawable/
+            mv MainActivity.kt OverlayService.kt TapService.kt app/src/main/java/com/example/mapoverlay/
+            mv ic_close.xml ic_launcher.xml ic_map.xml ic_skip.xml app/src/main/res/drawable/
             mv strings.xml app/src/main/res/values/
+            mv accessibility_config.xml app/src/main/res/xml/
           fi
 
       - name: Use fixed signing key
