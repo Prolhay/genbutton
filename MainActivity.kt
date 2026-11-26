@@ -1,6 +1,7 @@
 package com.example.mapoverlay
 
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -10,6 +11,7 @@ import android.provider.Settings
 import android.view.Gravity
 import android.widget.Button
 import android.widget.LinearLayout
+import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
 
@@ -45,6 +47,29 @@ class MainActivity : Activity() {
                 "Кнопку можно перетаскивать пальцем."
             textSize = 16f
         })
+
+        val prefs = getSharedPreferences(OverlayService.PREFS, Context.MODE_PRIVATE)
+        val startPct = prefs.getInt(OverlayService.KEY_ALPHA, 100).coerceIn(30, 100)
+        val alphaLabel = TextView(this).apply {
+            text = "Прозрачность карты: $startPct%\n(в игре: долгое нажатие на кнопку переключает 100/70/40%)"
+            textSize = 14f
+            setPadding(0, dp(16), 0, 0)
+        }
+        val alphaBar = SeekBar(this).apply {
+            max = 70 // 30..100 %
+            progress = startPct - 30
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(bar: SeekBar?, value: Int, fromUser: Boolean) {
+                    val pct = value + 30
+                    alphaLabel.text = "Прозрачность карты: $pct%\n(в игре: долгое нажатие на кнопку переключает 100/70/40%)"
+                    prefs.edit().putInt(OverlayService.KEY_ALPHA, pct).apply()
+                }
+                override fun onStartTrackingTouch(bar: SeekBar?) {}
+                override fun onStopTrackingTouch(bar: SeekBar?) {}
+            })
+        }
+        root.addView(alphaLabel)
+        root.addView(alphaBar)
 
         root.addView(button("1. Разрешить поверх других окон") {
             startActivity(

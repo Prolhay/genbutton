@@ -7,6 +7,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
+import android.content.res.Configuration
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.Color
@@ -20,6 +21,7 @@ import android.os.Looper
 import android.os.Message
 import android.view.ContextThemeWrapper
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.ViewConfiguration
@@ -32,6 +34,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import android.widget.ImageView
+import android.widget.Toast
 import kotlin.math.abs
 
 class OverlayService : Service() {
@@ -45,6 +48,8 @@ class OverlayService : Service() {
 
         private const val CHANNEL_ID = "overlay_button"
         private const val NOTIF_ID = 1
+        const val PREFS = "settings"
+        const val KEY_ALPHA = "map_alpha_pct"
     }
 
     private lateinit var wm: WindowManager
@@ -56,6 +61,9 @@ class OverlayService : Service() {
     private var webView: WebView? = null
     private var mapLayout: MapLayout? = null
     private var popupView: WebView? = null
+    private var mapParams: WindowManager.LayoutParams? = null
+
+    private val prefs by lazy { getSharedPreferences(PREFS, Context.MODE_PRIVATE) }
 
     private val overlayType = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
 
@@ -74,6 +82,51 @@ class OverlayService : Service() {
             return START_NOT_STICKY
         }
         return START_STICKY
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        // Поворот экрана: берём положение кнопки, сохранённое для этой ориентации
+        val b = button
+        val lp = buttonParams
+        if (b != null && lp != null) {
+            applySavedPosition(lp, newConfig)
+            runCatching { wm.updateViewLayout(b, lp) }
+        }
+    }
+
+    private fun applySavedPosition(lp: WindowManager.LayoutParams, cfg: Configuration) {
+        val density = resources.displayMetrics.density
+        val maxX = (cfg.screenWidthDp * density).toInt() - dp(52)
+        val maxY = (cfg.screenHeightDp * density).toInt() - dp(52)
+        val suffix = if (cfg.orientation == Configuration.ORIENTATION_LANDSCAPE) "_land" else "_port"
+        lp.x = prefs.getInt("btn_x$suffix", dp(8)).coerceIn(0, maxX.coerceAtLeast(0))
+        lp.y = prefs.getInt("btn_y$suffix", dp(120)).coerceIn(0, maxY.coerceAtLeast(0))
+    }
+
+    private fun saveButtonPosition(lp: WindowManager.LayoutParams) {
+        val suffix = if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) "_land" else "_port"
+        prefs.edit().putInt("btn_x$suffix", lp.x).putInt("btn_y$suffix", lp.y).apply()
+    }
+
+    private fun mapAlpha(): Float = (prefs.getInt(KEY_ALPHA, 100) / 100f).coerceIn(0.3f, 1f)
+
+    /** Долгое нажатие на кнопку: 100% -> 70% -> 40% -> 100% */
+    private fun cycleOpacity() {
+        val cur = prefs.getInt(KEY_ALPHA, 100)
+        val next = when {
+            cur > 85 -> 70
+            cur > 55 -> 40
+            else -> 100
+        }
+        prefs.edit().putInt(KEY_ALPHA, next).apply()
+        val layout = mapLayout
+        val lp = mapParams
+        if (layout != null && lp != null) {
+            lp.alpha = mapAlpha()
+            runCatching { wm.updateViewLayout(layout, lp) }
+        }
+        Toast.makeText(this, "Прозрачность карты: $next%", Toast.LENGTH_SHORT).show()
     }
 
     override fun onDestroy() {
@@ -143,9 +196,8 @@ class OverlayService : Service() {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = dp(8)
-            y = dp(120)
         }
+        applySavedPosition(lp, resources.configuration)
 
         val slop = ViewConfiguration.get(this).scaledTouchSlop
         var downX = 0f
@@ -153,6 +205,12 @@ class OverlayService : Service() {
         var startX = 0
         var startY = 0
         var moved = false
+        var longFired = false
+        val longPress = Runnable {
+            longFired = true
+            btn.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+            cycleOpacity()
+        }
 
         btn.setOnTouchListener { _, e ->
             when (e.actionMasked) {
@@ -160,12 +218,17 @@ class OverlayService : Service() {
                     downX = e.rawX; downY = e.rawY
                     startX = lp.x; startY = lp.y
                     moved = false
+                    longFired = false
+                    handler.postDelayed(longPress, ViewConfiguration.getLongPressTimeout().toLong())
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
                     val dx = e.rawX - downX
                     val dy = e.rawY - downY
-                    if (!moved && (abs(dx) > slop || abs(dy) > slop)) moved = true
+                    if (!moved && (abs(dx) > slop || abs(dy) > slop)) {
+                        moved = true
+                        handler.removeCallbacks(longPress)
+                    }
                     if (moved) {
                         lp.x = startX + dx.toInt()
                         lp.y = startY + dy.toInt()
@@ -174,9 +237,17 @@ class OverlayService : Service() {
                     true
                 }
                 MotionEvent.ACTION_UP -> {
-                    // Короткое нажатие (не перетаскивание) — переключаем карту.
-                    // post — чтобы не менять окна прямо посреди обработки касания.
-                    if (!moved) handler.post { toggleMap() }
+                    handler.removeCallbacks(longPress)
+                    if (moved) {
+                        saveButtonPosition(lp)
+                    } else if (!longFired) {
+                        // post — чтобы не менять окна прямо посреди обработки касания
+                        handler.post { toggleMap() }
+                    }
+                    true
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    handler.removeCallbacks(longPress)
                     true
                 }
                 else -> false
@@ -221,13 +292,15 @@ class OverlayService : Service() {
             WindowManager.LayoutParams.MATCH_PARENT,
             overlayType,
             WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
-            PixelFormat.OPAQUE
+            PixelFormat.TRANSLUCENT
         ).apply {
             softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+            alpha = mapAlpha()
         }
 
         wm.addView(layout, lp)
         mapLayout = layout
+        mapParams = lp
 
         web.onResume()
         web.resumeTimers()
@@ -245,6 +318,7 @@ class OverlayService : Service() {
         }
         runCatching { wm.removeView(layout) }
         mapLayout = null
+        mapParams = null
         button?.setImageResource(R.drawable.ic_map)
     }
 
